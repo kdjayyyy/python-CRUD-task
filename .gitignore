@@ -1,0 +1,40 @@
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+myenv/
+venv/
+ENV/
+
+# Environment variables
+.env
+.env.*
+
+# VS Code and editor settings
+.vscode/
+.idea/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Test and coverage outputs
+.coverage
+htmlcov/
+.pytest_cache/
+*.log
+
+# Build and distribution
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Uvicorn reload artifacts
+*.pid
+
+# Jupyter (if you ever add notebooks)
+.ipynb_checkpoints/
