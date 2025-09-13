@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Query
 from pymongo import ReturnDocument
-from typing import List
+import re
+from typing import List, Dict, Any, Optional
 from app.schemas import EmployeeCreate, EmployeeOut, EmployeeUpdate
 from app.db import mongo_client, to_mongo_datetime
 from app.utils import serialize_mongo_doc
@@ -18,6 +19,80 @@ def get_db():
     return db
 
 
+# Static queries
+# Simple list-by-department with sorting (helpful during setup testing)
+@router.get("", response_model=List[EmployeeOut])
+async def list_employees(department: Optional[str] = Query(None, description="Filter by department"),
+                         limit: int = Query(100, ge=1, le=1000)):
+    """
+    List employees optionally filtered by department.
+    Sorted by joining_date (newest first).
+    """
+    db = get_db()
+    coll = db["employees"]
+    query: Dict[str, Any] = {}
+    if department:
+        query["department"] = department
+
+    cursor = coll.find(query).sort("joining_date", -1).limit(limit)
+    out: List[Dict[str, Any]] = []
+    async for doc in cursor:
+        out.append(serialize_mongo_doc(doc))
+    return out
+
+@router.get("/search", response_model=List[EmployeeOut])
+async def search_by_skill(skill: str = Query(..., description="Skill to search for, e.g. Python"), limit: int = Query(100, ge=1, le=1000)):
+    """
+    Search employees whose `skills` array contains the provided skill (case-insensitive).
+    Example: /employees/search?skill=Python
+    """
+    db = get_db()
+    coll = db["employees"]
+
+    # Use Python regex (case-insensitive) so we match array elements exactly ignoring case
+    try:
+        regex = re.compile(f"^{re.escape(skill)}$", re.IGNORECASE)
+    except re.error:
+        # fallback to simple match
+        regex = re.compile(re.escape(skill), re.IGNORECASE)
+
+    cursor = coll.find({"skills": {"$in": [regex]}}).sort("joining_date", -1).limit(limit)
+    out: List[Dict[str, Any]] = []
+    async for doc in cursor:
+        out.append(serialize_mongo_doc(doc))
+    return out
+
+@router.get("/avg-salary", response_model=List[Dict[str, Any]])
+async def avg_salary_by_department():
+    """
+    Return average salary grouped by department.
+    Output: [{ "department": "...", "avg_salary": <rounded int> }, ...]
+    """
+    db = get_db()
+    coll = db["employees"]
+
+    pipeline = [
+        {"$group": {"_id": "$department", "avg_salary": {"$avg": "$salary"}}},
+        {"$project": {"_id": 0, "department": "$_id", "avg_salary": {"$round": ["$avg_salary", 0]}}},
+        {"$sort": {"department": 1}}
+    ]
+
+    cursor = coll.aggregate(pipeline)
+    results: List[Dict[str, Any]] = []
+    async for row in cursor:
+        # ensure avg_salary is int (Mongo $round returns number; cast to int for consistency)
+        avg = row.get("avg_salary")
+        try:
+            row["avg_salary"] = int(avg) if avg is not None else None
+        except Exception:
+            # fallback: leave as-is
+            pass
+        results.append(row)
+    return results
+
+
+
+# Dynamic queries
 @router.post("", response_model=EmployeeOut, status_code=status.HTTP_201_CREATED)
 async def create_employee(payload: EmployeeCreate):
     db = get_db()
@@ -46,22 +121,6 @@ async def get_employee(employee_id: str):
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="employee not found")
     return serialize_mongo_doc(doc)
-
-
-# Simple list-by-department with sorting (helpful during setup testing)
-@router.get("", response_model=List[EmployeeOut])
-async def list_employees(department: str = None, limit: int = 100):
-    db = get_db()
-    coll = db["employees"]
-    query = {}
-    if department:
-        query["department"] = department
-    cursor = coll.find(query).sort("joining_date", -1).limit(limit)
-    documents = []
-    async for doc in cursor:
-        documents.append(serialize_mongo_doc(doc))
-    return documents
-
 
 @router.put("/{employee_id}", response_model=EmployeeOut)
 async def update_employee(employee_id: str, payload: EmployeeUpdate):
@@ -105,3 +164,9 @@ async def delete_employee(employee_id: str):
     if res.deleted_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="employee not found")
     return {"detail": "employee deleted"}
+
+
+
+
+
+
