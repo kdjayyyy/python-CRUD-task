@@ -1,13 +1,18 @@
-from fastapi import APIRouter, HTTPException, status, Depends, Query
-from pymongo import ReturnDocument
 import re
-from typing import List, Dict, Any, Optional
-from app.schemas import EmployeeCreate, EmployeeOut, EmployeeUpdate
-from app.db import mongo_client, to_mongo_datetime
-from app.utils import serialize_mongo_doc
-from pymongo.errors import DuplicateKeyError
-from app.db import MongoClientWrapper  # for typing only
 import logging
+from typing import List, Dict, Any, Optional
+
+from pymongo.errors import DuplicateKeyError
+from fastapi import APIRouter, HTTPException, status, Depends, Query, Form
+from pymongo import ReturnDocument
+
+from app.schemas import EmployeeCreate, EmployeeOut, EmployeeUpdate
+from app.db import mongo_client, to_mongo_datetime, MongoClientWrapper
+from app.utils import serialize_mongo_doc
+from app.auth import create_access_token, require_auth 
+from app.config import settings
+
+import bcrypt
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -17,6 +22,22 @@ def get_db():
     """ Dependency to fetch DB instance (assumes startup connected). """
     db = mongo_client.get_database()
     return db
+
+@router.post("/token")
+async def token(username: str = Form(...), password: str = Form(...)):
+    """
+    Token endpoint: accepts username/password, validates with bcrypt hash from env.
+    Returns: {"access_token": "...", "token_type": "bearer"}
+    """
+    if username != settings.ADMIN_USERNAME:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    # Verify password against stored bcrypt hash
+    if not bcrypt.checkpw(password.encode("utf-8"), settings.ADMIN_PASSWORD_HASH.encode("utf-8")):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    token = create_access_token(subject=username)
+    return {"access_token": token, "token_type": "bearer"}
 
 
 # Static queries
@@ -94,7 +115,10 @@ async def avg_salary_by_department():
 
 # Dynamic queries
 @router.post("", response_model=EmployeeOut, status_code=status.HTTP_201_CREATED)
-async def create_employee(payload: EmployeeCreate):
+async def create_employee(payload: EmployeeCreate, current_user: str = Depends(require_auth)):
+    """
+    Create a new employee. Requires JWT authentication.
+    """
     db = get_db()
     coll = db["employees"]
     # prepare document
@@ -123,10 +147,11 @@ async def get_employee(employee_id: str):
     return serialize_mongo_doc(doc)
 
 @router.put("/{employee_id}", response_model=EmployeeOut)
-async def update_employee(employee_id: str, payload: EmployeeUpdate):
+async def update_employee(employee_id: str, payload: EmployeeUpdate, current_user: str = Depends(require_auth)):
     """
     Partial update: only provided fields are applied.
     Returns 400 if no fields provided, 404 if employee not found.
+    Requires JWT authentication.
     """
     db = get_db()
     coll = db["employees"]
@@ -157,7 +182,11 @@ async def update_employee(employee_id: str, payload: EmployeeUpdate):
 
 
 @router.delete("/{employee_id}", status_code=status.HTTP_200_OK)
-async def delete_employee(employee_id: str):
+async def delete_employee(employee_id: str, current_user: str = Depends(require_auth)):
+    """
+    Delete an employee identified by employee_id.
+    Requires JWT authentication.
+    """
     db = get_db()
     coll = db["employees"]
     res = await coll.delete_one({"employee_id": employee_id})
